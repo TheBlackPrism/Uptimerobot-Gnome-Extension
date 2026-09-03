@@ -1,0 +1,15 @@
+.uptimerobot-dot-ok {
+    color: #33d17a;
+}
+
+.uptimerobot-dot-down {
+    color: #e01b24;
+}
+
+.uptimerobot-dot-unknown {
+    color: #9a9996;
+}
+
+.uptimerobot-menu-dot {
+    icon-size: 10px;
+}
