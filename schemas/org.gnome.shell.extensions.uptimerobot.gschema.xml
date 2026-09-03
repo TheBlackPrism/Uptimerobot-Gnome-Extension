@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="uptimerobot">
+  <schema id="org.gnome.shell.extensions.uptimerobot" path="/org/gnome/shell/extensions/uptimerobot/">
+    <key name="api-key" type="s">
+      <default>''</default>
+      <summary>UptimeRobot API key</summary>
+      <description>Main or read-only API key used as bearer token against the UptimeRobot v3 API.</description>
+    </key>
+    <key name="refresh-interval" type="i">
+      <range min="60" max="3600"/>
+      <default>300</default>
+      <summary>Refresh interval</summary>
+      <description>Seconds between two status checks against the UptimeRobot API.</description>
+    </key>
+    <key name="hidden-monitors" type="as">
+      <default>[]</default>
+      <summary>Hidden monitors</summary>
+      <description>IDs (as strings) of the monitors that are hidden. Hidden monitors are not listed in the menu and do not influence the colour of the status dot. Monitors not in this list are shown, so newly created monitors appear automatically.</description>
+    </key>
+  </schema>
+</schemalist>
