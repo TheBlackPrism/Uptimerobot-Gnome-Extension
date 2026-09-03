@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TheBlackPrism
+
 // Preferences dialog of the UptimeRobot extension.
 //
 // Runs in a separate GTK 4 / libadwaita process, not inside GNOME Shell.

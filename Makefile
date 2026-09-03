@@ -10,6 +10,7 @@ all: pack
 pack:
 	gnome-extensions pack --force \
 		--extra-source=api.js \
+		--extra-source=LICENSE \
 		--schema=schemas/org.gnome.shell.extensions.uptimerobot.gschema.xml \
 		.
 
