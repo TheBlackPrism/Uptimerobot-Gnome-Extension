@@ -5,8 +5,11 @@ ZIP = $(UUID).shell-extension.zip
 
 all: pack
 
+# gnome-extensions pack only bundles extension.js, prefs.js, metadata.json
+# and stylesheet.css by default; every additional module must be listed.
 pack:
 	gnome-extensions pack --force \
+		--extra-source=api.js \
 		--schema=schemas/org.gnome.shell.extensions.uptimerobot.gschema.xml \
 		.
 

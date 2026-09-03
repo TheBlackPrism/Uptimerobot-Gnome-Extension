@@ -1,10 +1,10 @@
 {
   "uuid": "uptimerobot@theblackprism.ch",
   "name": "UptimeRobot Status",
-  "description": "Shows a dot in the top bar: green when all of your UptimeRobot monitors are up, red when at least one of them is down.",
-  "shell-version": ["45", "46", "47", "48", "49"],
+  "description": "Shows a dot in the top bar: green when all of your UptimeRobot monitors are up, red when at least one of them is down. The menu lists your monitors and opens their pages; monitors can be hidden in the settings.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/TheBlackPrism/Uptimerobot-Gnome-Extension",
   "settings-schema": "org.gnome.shell.extensions.uptimerobot",
   "gettext-domain": "uptimerobot",
-  "version-name": "1.0.0"
+  "version-name": "2.0.0"
 }

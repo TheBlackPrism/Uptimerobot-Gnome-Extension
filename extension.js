@@ -1,47 +1,47 @@
+// UptimeRobot status indicator for GNOME Shell.
+//
+// Shows a coloured dot in the top bar summarising the state of the monitors
+// of an UptimeRobot account and lists the monitors in a drop-down menu.
+// All API access lives in api.js, which is shared with the preferences.
+
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
-import Soup from 'gi://Soup';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
-import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const API_URL = 'https://api.uptimerobot.com/v2/getMonitors';
-// getMonitors returns at most 50 monitors per request.
-const PAGE_SIZE = 50;
-const MAX_MONITORS = 1000;
+import {
+    Health,
+    UptimeRobotClient,
+    isCancelledError,
+    isPaused,
+    monitorHealth,
+    monitorKey,
+    monitorLink,
+    monitorName,
+} from './api.js';
+
 // Typing an API key in the preferences fires one settings change per
 // keystroke; wait for the typing to settle before hitting the API.
 const SETTINGS_DEBOUNCE_MS = 1000;
 
-// Monitor status codes of the UptimeRobot v2 API.
-const MonitorStatus = {
-    PAUSED: 0,
-    NOT_CHECKED_YET: 1,
-    UP: 2,
-    SEEMS_DOWN: 8,
-    DOWN: 9,
-};
-
-const Health = {
-    UNKNOWN: 'unknown',
-    OK: 'ok',
-    DOWN: 'down',
-};
-
-function monitorHealth(monitor) {
-    switch (monitor.status) {
-    case MonitorStatus.DOWN:
-    case MonitorStatus.SEEMS_DOWN:
-        return Health.DOWN;
-    case MonitorStatus.UP:
-        return Health.OK;
-    default:
-        return Health.UNKNOWN;
+/**
+ * Host name of a URL, used as a compact hint of where a menu entry leads.
+ *
+ * @param {string} uri absolute URL
+ * @returns {string} the host, or the URL itself if it cannot be parsed
+ */
+function linkHost(uri) {
+    try {
+        return GLib.Uri.parse(uri, GLib.UriFlags.NONE).get_host() ?? uri;
+    } catch {
+        return uri;
     }
 }
 
@@ -52,14 +52,16 @@ class UptimeRobotIndicator extends PanelMenu.Button {
 
         this._extension = extension;
         this._settings = extension.getSettings();
-        this._session = new Soup.Session({
-            timeout: 30,
-            user_agent: 'uptimerobot-gnome-extension',
-        });
+        this._client = new UptimeRobotClient(
+            `uptimerobot-gnome-extension/${extension.metadata['version-name'] ?? 'dev'}`);
         this._cancellable = new Gio.Cancellable();
         this._pollId = null;
         this._debounceId = null;
         this._refreshing = false;
+        // Result of the last successful fetch, including hidden monitors, so
+        // that toggling a monitor's visibility can re-render without a
+        // network round-trip.
+        this._monitors = null;
 
         this._icon = new St.Icon({
             icon_name: 'media-record-symbolic',
@@ -92,6 +94,7 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         this._settingsChangedIds = [
             this._settings.connect('changed::api-key', () => this._scheduleRefresh()),
             this._settings.connect('changed::refresh-interval', () => this._startPolling()),
+            this._settings.connect('changed::hidden-monitors', () => this._render()),
         ];
 
         this._setHealth(Health.UNKNOWN, _('Checking…'));
@@ -110,13 +113,14 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         }
 
         this._cancellable.cancel();
-        this._session.abort();
-        this._session = null;
+        this._client.destroy();
+        this._client = null;
 
         for (const id of this._settingsChangedIds)
             this._settings.disconnect(id);
         this._settingsChangedIds = [];
         this._settings = null;
+        this._monitors = null;
 
         super.destroy();
     }
@@ -143,12 +147,14 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         });
     }
 
+    /** Fetch all monitors from the API and re-render the menu. */
     async _refresh() {
         if (this._refreshing || !this._settings)
             return;
 
         const apiKey = this._settings.get_string('api-key').trim();
         if (apiKey === '') {
+            this._monitors = null;
             this._monitorsSection.removeAll();
             this._setHealth(Health.UNKNOWN, _('Add your API key in the settings'));
             return;
@@ -156,17 +162,17 @@ class UptimeRobotIndicator extends PanelMenu.Button {
 
         this._refreshing = true;
         try {
-            const monitors = await this._fetchAllMonitors(apiKey);
+            const monitors = await this._client.fetchMonitors(apiKey, this._cancellable);
             if (!this._settings)
                 return;
-            this._showMonitors(monitors);
+            this._monitors = monitors;
+            this._render();
         } catch (e) {
-            if (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                return;
-            if (!this._settings)
+            if (isCancelledError(e) || !this._settings)
                 return;
 
             console.warn(`UptimeRobot: failed to fetch monitors: ${e.message}`);
+            this._monitors = null;
             this._monitorsSection.removeAll();
             this._setHealth(Health.UNKNOWN, `${_('Error')}: ${e.message}`, true);
         } finally {
@@ -174,15 +180,29 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         }
     }
 
-    _showMonitors(monitors) {
-        const down = monitors.filter(m => monitorHealth(m) === Health.DOWN).length;
-        const paused = monitors.filter(m => m.status === MonitorStatus.PAUSED).length;
-        const active = monitors.length - paused;
+    /**
+     * Rebuild the dot colour, the summary line and the monitor list from
+     * the last fetched monitors, honouring the `hidden-monitors` setting.
+     */
+    _render() {
+        if (!this._settings || !this._monitors)
+            return;
+
+        const hidden = new Set(this._settings.get_strv('hidden-monitors'));
+        const visible = this._monitors.filter(m => !hidden.has(monitorKey(m)));
+        const hiddenCount = this._monitors.length - visible.length;
+
+        const down = visible.filter(m => monitorHealth(m) === Health.DOWN).length;
+        const paused = visible.filter(isPaused).length;
+        const active = visible.length - paused;
 
         let health, summary;
-        if (monitors.length === 0) {
+        if (this._monitors.length === 0) {
             health = Health.UNKNOWN;
             summary = _('No monitors found');
+        } else if (visible.length === 0) {
+            health = Health.UNKNOWN;
+            summary = _('All monitors are hidden');
         } else if (down > 0) {
             health = Health.DOWN;
             summary = active === 1 ? _('Monitor is down') : `${down} of ${active} monitors down`;
@@ -196,31 +216,73 @@ class UptimeRobotIndicator extends PanelMenu.Button {
 
         this._monitorsSection.removeAll();
         const rank = {[Health.DOWN]: 0, [Health.OK]: 1, [Health.UNKNOWN]: 2};
-        const sorted = [...monitors].sort((a, b) =>
+        const sorted = [...visible].sort((a, b) =>
             rank[monitorHealth(a)] - rank[monitorHealth(b)] ||
-            (a.friendly_name ?? '').localeCompare(b.friendly_name ?? ''));
+            monitorName(a).localeCompare(monitorName(b)));
         for (const monitor of sorted)
             this._monitorsSection.addMenuItem(this._createMonitorItem(monitor));
+
+        if (hiddenCount > 0) {
+            const text = ngettext('%d monitor hidden', '%d monitors hidden', hiddenCount)
+                .replace('%d', String(hiddenCount));
+            this._monitorsSection.addMenuItem(new PopupMenu.PopupMenuItem(text, {reactive: false}));
+        }
 
         this._setHealth(health, summary, true);
     }
 
+    /**
+     * One row of the monitor list: status dot, name and the host of the
+     * page that opens when the row is clicked.
+     *
+     * @param {object} monitor a monitor object of the v3 API
+     * @returns {PopupMenu.PopupBaseMenuItem} the menu item
+     */
     _createMonitorItem(monitor) {
-        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const item = new PopupMenu.PopupBaseMenuItem();
         item.add_child(new St.Icon({
             icon_name: 'media-record-symbolic',
             style_class: `uptimerobot-menu-dot uptimerobot-dot-${monitorHealth(monitor)}`,
             y_align: Clutter.ActorAlign.CENTER,
         }));
 
-        let name = monitor.friendly_name || monitor.url || `#${monitor.id}`;
-        if (monitor.status === MonitorStatus.PAUSED)
+        let name = monitorName(monitor);
+        if (isPaused(monitor))
             name = `${name} (${_('paused')})`;
-        item.add_child(new St.Label({
+        const nameLabel = new St.Label({
             text: name,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        nameLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        item.add_child(nameLabel);
+
+        const link = monitorLink(monitor);
+        item.add_child(new St.Label({
+            text: link.isDashboard ? _('Dashboard') : linkHost(link.uri),
+            style_class: 'uptimerobot-monitor-link',
+            opacity: 150,
             y_align: Clutter.ActorAlign.CENTER,
         }));
+
+        item.connect('activate', () => this._openMonitor(monitor));
         return item;
+    }
+
+    /**
+     * Open the monitored page (or the monitor's dashboard page for
+     * non-HTTP monitors) in the default browser.
+     *
+     * @param {object} monitor a monitor object of the v3 API
+     */
+    _openMonitor(monitor) {
+        const {uri} = monitorLink(monitor);
+        try {
+            Gio.AppInfo.launch_default_for_uri(uri, global.create_app_launch_context(0, -1));
+        } catch (e) {
+            console.warn(`UptimeRobot: could not open ${uri}: ${e.message}`);
+            Main.notifyError(_('UptimeRobot: could not open link'), e.message);
+        }
     }
 
     _setHealth(health, summary, withTimestamp = false) {
@@ -228,48 +290,6 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         if (withTimestamp)
             summary = `${summary} · ${GLib.DateTime.new_now_local().format('%H:%M')}`;
         this._statusItem.label.text = summary;
-    }
-
-    async _fetchAllMonitors(apiKey) {
-        const monitors = [];
-        let offset = 0;
-        for (;;) {
-            const response = await this._request(apiKey, offset);
-            const page = response.monitors ?? [];
-            monitors.push(...page);
-
-            const total = response.pagination?.total ?? monitors.length;
-            offset += PAGE_SIZE;
-            if (page.length === 0 || monitors.length >= total || monitors.length >= MAX_MONITORS)
-                break;
-        }
-        return monitors;
-    }
-
-    _request(apiKey, offset) {
-        return new Promise((resolve, reject) => {
-            const form = `api_key=${encodeURIComponent(apiKey)}&format=json` +
-                `&limit=${PAGE_SIZE}&offset=${offset}`;
-            const message = Soup.Message.new_from_encoded_form('POST', API_URL, form);
-
-            this._session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, this._cancellable,
-                (session, result) => {
-                    try {
-                        const bytes = session.send_and_read_finish(result);
-                        if (message.get_status() !== Soup.Status.OK)
-                            throw new Error(`HTTP ${message.get_status()} ${message.get_reason_phrase() ?? ''}`.trim());
-
-                        const text = new TextDecoder().decode(bytes.get_data() ?? new Uint8Array());
-                        const response = JSON.parse(text);
-                        if (response.stat !== 'ok')
-                            throw new Error(response.error?.message ?? response.error?.type ?? 'unknown API error');
-
-                        resolve(response);
-                    } catch (e) {
-                        reject(e);
-                    }
-                });
-        });
     }
 });
 

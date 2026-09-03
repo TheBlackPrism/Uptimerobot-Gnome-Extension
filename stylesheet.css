@@ -1,3 +1,4 @@
+/* Colour of the dot in the top bar and of the per-monitor dots in the menu. */
 .uptimerobot-dot-ok {
     color: #33d17a;
 }
@@ -10,6 +11,14 @@
     color: #9a9996;
 }
 
+/* Smaller dot in front of each monitor in the menu. */
 .uptimerobot-menu-dot {
     icon-size: 10px;
+}
+
+/* Host name (or "Dashboard") shown at the right of each monitor entry,
+ * hinting where a click on the entry leads. */
+.uptimerobot-monitor-link {
+    font-size: 0.9em;
+    margin-left: 16px;
 }
