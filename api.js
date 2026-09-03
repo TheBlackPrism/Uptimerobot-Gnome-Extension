@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TheBlackPrism
+
 // Shared UptimeRobot v3 API client and monitor helpers.
 //
 // This module is imported by both extension.js (running inside GNOME Shell)

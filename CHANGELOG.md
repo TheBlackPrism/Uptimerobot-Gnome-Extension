@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The project is now licensed under the GNU GPL, version 3 or later (`LICENSE`). Source files carry SPDX headers.
+
 ## 2.0.0 – 2026-09-03
 
 ### Changed

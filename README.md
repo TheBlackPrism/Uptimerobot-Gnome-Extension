@@ -126,3 +126,7 @@ make uninstall
 ```
 
 The settings (including the API key) stay in dconf; reset them with `dconf reset -f /org/gnome/shell/extensions/uptimerobot/` if you want them gone as well.
+
+## License
+
+This extension is free software, released under the terms of the [GNU General Public License](LICENSE), version 3

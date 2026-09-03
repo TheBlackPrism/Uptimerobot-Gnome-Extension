@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TheBlackPrism
+
 // UptimeRobot status indicator for GNOME Shell.
 //
 // Shows a coloured dot in the top bar summarising the state of the monitors
