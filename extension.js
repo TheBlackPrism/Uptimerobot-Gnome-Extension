@@ -4,8 +4,9 @@
 // UptimeRobot status indicator for GNOME Shell.
 //
 // Shows a coloured dot in the top bar summarising the state of the monitors
-// of an UptimeRobot account and lists the monitors in a drop-down menu.
-// All API access lives in api.js, which is shared with the preferences.
+// of an UptimeRobot account, lists the monitors in a drop-down menu and
+// sends a desktop notification whenever a monitor goes down or comes back
+// up. All API access lives in api.js, which is shared with the preferences.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -16,10 +17,12 @@ import St from 'gi://St';
 
 import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {
+    DASHBOARD_URL,
     Health,
     UptimeRobotClient,
     isCancelledError,
@@ -34,6 +37,11 @@ import {
 // keystroke; wait for the typing to settle before hitting the API.
 const SETTINGS_DEBOUNCE_MS = 1000;
 
+// Icons of the notification source and of the two kinds of notification.
+const SOURCE_ICON = 'network-transmit-receive-symbolic';
+const DOWN_ICON = 'network-error-symbolic';
+const UP_ICON = 'emblem-ok-symbolic';
+
 /**
  * Host name of a URL, used as a compact hint of where a menu entry leads.
  *
@@ -46,6 +54,16 @@ function linkHost(uri) {
     } catch {
         return uri;
     }
+}
+
+/**
+ * Comma separated monitor names, e.g. for the body of a notification.
+ *
+ * @param {object[]} monitors monitor objects of the v3 API
+ * @returns {string} the names, sorted alphabetically
+ */
+function monitorNames(monitors) {
+    return monitors.map(monitorName).sort((a, b) => a.localeCompare(b)).join(', ');
 }
 
 const UptimeRobotIndicator = GObject.registerClass(
@@ -65,6 +83,15 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         // that toggling a monitor's visibility can re-render without a
         // network round-trip.
         this._monitors = null;
+        // Health of every monitor (hidden ones included) as of the last
+        // successful fetch, keyed by monitor ID; null until the first fetch
+        // succeeded. Compared against each new fetch to detect status
+        // changes worth a notification.
+        this._lastHealth = null;
+        // Notification source shared by all of our notifications. GNOME
+        // Shell destroys it as soon as its last notification is dismissed,
+        // so it is created lazily and dropped on destroy.
+        this._notificationSource = null;
 
         this._icon = new St.Icon({
             icon_name: 'media-record-symbolic',
@@ -95,7 +122,12 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         });
 
         this._settingsChangedIds = [
-            this._settings.connect('changed::api-key', () => this._scheduleRefresh()),
+            this._settings.connect('changed::api-key', () => {
+                // A different key may mean a different account whose
+                // monitors happen to share IDs; do not compare across keys.
+                this._lastHealth = null;
+                this._scheduleRefresh();
+            }),
             this._settings.connect('changed::refresh-interval', () => this._startPolling()),
             this._settings.connect('changed::hidden-monitors', () => this._render()),
         ];
@@ -124,6 +156,13 @@ class UptimeRobotIndicator extends PanelMenu.Button {
         this._settingsChangedIds = [];
         this._settings = null;
         this._monitors = null;
+        this._lastHealth = null;
+
+        // Sent notifications stay in the notification list, but their
+        // click handlers refer to this indicator, so take them down along
+        // with it.
+        this._notificationSource?.destroy(MessageTray.NotificationDestroyedReason.SOURCE_CLOSED);
+        this._notificationSource = null;
 
         super.destroy();
     }
@@ -169,6 +208,7 @@ class UptimeRobotIndicator extends PanelMenu.Button {
             if (!this._settings)
                 return;
             this._monitors = monitors;
+            this._notifyStatusChanges(monitors);
             this._render();
         } catch (e) {
             if (isCancelledError(e) || !this._settings)
@@ -279,13 +319,177 @@ class UptimeRobotIndicator extends PanelMenu.Button {
      * @param {object} monitor a monitor object of the v3 API
      */
     _openMonitor(monitor) {
-        const {uri} = monitorLink(monitor);
+        this._openUri(monitorLink(monitor).uri);
+    }
+
+    /**
+     * Open a URL in the default browser, reporting failures to the user.
+     *
+     * @param {string} uri absolute URL
+     */
+    _openUri(uri) {
         try {
             Gio.AppInfo.launch_default_for_uri(uri, global.create_app_launch_context(0, -1));
         } catch (e) {
             console.warn(`UptimeRobot: could not open ${uri}: ${e.message}`);
             Main.notifyError(_('UptimeRobot: could not open link'), e.message);
         }
+    }
+
+    /**
+     * Compare the freshly fetched monitors with the previous fetch and
+     * notify about every shown monitor that went down or came back up.
+     *
+     * The first successful fetch (and the first one after an API key
+     * change) only records the current state. Hidden monitors are tracked
+     * too, so that un-hiding one does not trigger a stale notification,
+     * but they never cause a notification themselves. Failed fetches keep
+     * the last known state, so a change that happened while the API was
+     * unreachable is still reported once it can be reached again.
+     *
+     * @param {object[]} monitors all monitors of the last fetch
+     */
+    _notifyStatusChanges(monitors) {
+        const previous = this._lastHealth;
+        const current = new Map(monitors.map(m => [monitorKey(m), monitorHealth(m)]));
+        this._lastHealth = current;
+
+        if (!previous || !this._settings.get_boolean('notify-status-changes'))
+            return;
+
+        const hidden = new Set(this._settings.get_strv('hidden-monitors'));
+        const wentDown = [];
+        const cameUp = [];
+        for (const monitor of monitors) {
+            const key = monitorKey(monitor);
+            if (hidden.has(key))
+                continue;
+
+            const before = previous.get(key);
+            const after = current.get(key);
+            if (before === undefined || before === after)
+                continue;
+
+            if (after === Health.DOWN)
+                wentDown.push(monitor);
+            else if (after === Health.OK && before === Health.DOWN)
+                cameUp.push(monitor);
+        }
+
+        if (wentDown.length > 0)
+            this._notifyMonitors(wentDown, true);
+        if (cameUp.length > 0)
+            this._notifyMonitors(cameUp, false);
+    }
+
+    /**
+     * Send one notification for a group of monitors that changed in the
+     * same direction. A single monitor gets its own notification whose
+     * activation opens the monitor's page; several monitors are summarised
+     * in one notification that opens the UptimeRobot dashboard.
+     *
+     * @param {object[]} monitors the monitors that changed
+     * @param {boolean} down true if they went down, false if they came up
+     */
+    _notifyMonitors(monitors, down) {
+        let title, body, uri;
+        if (monitors.length === 1) {
+            const [monitor] = monitors;
+            const name = monitorName(monitor);
+            title = down ? `${name} ${_('is down')}` : `${name} ${_('is up again')}`;
+            const link = monitorLink(monitor);
+            uri = link.uri;
+            const target = String(monitor.url ?? '').trim();
+            body = link.isDashboard
+                ? (target ? `${target} · ${_('Click to open the UptimeRobot dashboard')}` : _('Click to open the UptimeRobot dashboard'))
+                : `${target} · ${_('Click to open')}`;
+        } else {
+            const n = monitors.length;
+            title = (down
+                ? ngettext('%d monitor is down', '%d monitors are down', n)
+                : ngettext('%d monitor is up again', '%d monitors are up again', n))
+                .replace('%d', String(n));
+            body = monitorNames(monitors);
+            uri = DASHBOARD_URL;
+        }
+
+        this._sendNotification({
+            title,
+            body,
+            iconName: down ? DOWN_ICON : UP_ICON,
+            urgency: down ? MessageTray.Urgency.HIGH : MessageTray.Urgency.NORMAL,
+            uri,
+        });
+    }
+
+    /**
+     * Show a desktop notification under this extension's source. Supports
+     * the GNOME 46+ property-based MessageTray API and the positional one
+     * of GNOME 45.
+     *
+     * @param {object} params notification parameters
+     * @param {string} params.title notification title
+     * @param {string} params.body notification body
+     * @param {string} params.iconName themed icon of the notification
+     * @param {number} params.urgency one of MessageTray.Urgency
+     * @param {string} params.uri URL opened when the notification is activated
+     */
+    _sendNotification({title, body, iconName, urgency, uri}) {
+        try {
+            const modern = typeof MessageTray.Source.prototype.addNotification === 'function';
+            const source = this._getNotificationSource(modern);
+            const gicon = new Gio.ThemedIcon({name: iconName});
+
+            let notification;
+            if (modern) {
+                notification = new MessageTray.Notification({
+                    source,
+                    title,
+                    body,
+                    gicon,
+                    urgency,
+                    isTransient: false,
+                });
+            } else {
+                notification = new MessageTray.Notification(source, title, body, {gicon});
+                notification.setUrgency(urgency);
+                notification.setTransient(false);
+            }
+
+            notification.connect('activated', () => this._openUri(uri));
+
+            if (modern)
+                source.addNotification(notification);
+            else
+                source.showNotification(notification);
+        } catch (e) {
+            console.warn(`UptimeRobot: could not send notification: ${e.message}`);
+        }
+    }
+
+    /**
+     * The notification source of this extension, created on demand. GNOME
+     * Shell destroys a source once its last notification is gone, at which
+     * point the reference is dropped so the next call creates a new one.
+     *
+     * @param {boolean} modern whether the GNOME 46+ MessageTray API is in use
+     * @returns {MessageTray.Source} the source, already added to the tray
+     */
+    _getNotificationSource(modern) {
+        if (this._notificationSource)
+            return this._notificationSource;
+
+        const title = _('UptimeRobot Status');
+        const source = modern
+            ? new MessageTray.Source({title, iconName: SOURCE_ICON})
+            : new MessageTray.Source(title, SOURCE_ICON);
+        source.connect('destroy', () => {
+            if (this._notificationSource === source)
+                this._notificationSource = null;
+        });
+        Main.messageTray.add(source);
+        this._notificationSource = source;
+        return source;
     }
 
     _setHealth(health, summary, withTimestamp = false) {

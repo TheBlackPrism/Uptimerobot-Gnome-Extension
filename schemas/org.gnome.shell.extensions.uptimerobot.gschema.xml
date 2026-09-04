@@ -12,6 +12,11 @@
       <summary>Refresh interval</summary>
       <description>Seconds between two status checks against the UptimeRobot API.</description>
     </key>
+    <key name="notify-status-changes" type="b">
+      <default>true</default>
+      <summary>Notify on status changes</summary>
+      <description>Show a desktop notification when a shown monitor goes down or comes back up.</description>
+    </key>
     <key name="hidden-monitors" type="as">
       <default>[]</default>
       <summary>Hidden monitors</summary>
