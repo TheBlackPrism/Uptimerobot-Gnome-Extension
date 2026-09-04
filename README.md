@@ -16,6 +16,8 @@ Clicking the dot opens a menu that
 - tells you how many monitors are currently hidden,
 - offers *Refresh now* and *Settings* entries.
 
+Whenever a check finds that a shown monitor went down or came back up since the previous check, a desktop notification pops up (see [Notifications](#notifications)).
+
 ## Requirements
 
 - GNOME Shell 45 – 50 (the extension uses the ESM extension API introduced in GNOME 45; for a newer release, add its version number to `shell-version` in `metadata.json` before installing)
@@ -52,6 +54,17 @@ Open the extension's settings (via the *Settings* entry in the dot's menu, or th
 ### Polling
 
 - **Refresh interval** – seconds between two checks (60 – 3600, default 300). UptimeRobot itself only checks monitors every 5 minutes on free plans, so polling more often than that rarely gains anything. The status is also refreshed every time you open the menu.
+
+### Notifications
+
+- **Notify on status changes** – on by default. Each check compares every monitor's status with the previous check:
+  - A monitor that turned `DOWN` (or `LOOKS_DOWN`) produces a *"⟨name⟩ is down"* notification.
+  - A monitor that was down and is `UP` again produces a *"⟨name⟩ is up again"* notification.
+  - If several monitors change in the same direction during one check, they are summarised in a single *"N monitors are down"* / *"N monitors are up again"* notification listing their names.
+
+  Clicking a single-monitor notification opens the monitor's page (see [Monitor links](#monitor-links)); clicking a summary opens the UptimeRobot dashboard. Notifications stay in the notification list until you dismiss them, and the ones for outages are marked as high priority.
+
+  Hidden monitors never trigger notifications. Nothing is notified on the first check after the extension starts or after the API key changes, since there is no previous state to compare with. Pausing a monitor or resuming a paused one does not notify either.
 
 ### Monitors
 
@@ -93,7 +106,7 @@ HTTP errors are reported in the menu's summary line: 401 means the API key is in
 | `extension.js` | Top-bar indicator and menu, running inside GNOME Shell |
 | `prefs.js` | Preferences dialog (GTK 4 / libadwaita), running in its own process |
 | `api.js` | v3 API client and monitor helpers shared by both of the above |
-| `schemas/*.gschema.xml` | GSettings schema: `api-key`, `refresh-interval`, `hidden-monitors` |
+| `schemas/*.gschema.xml` | GSettings schema: `api-key`, `refresh-interval`, `notify-status-changes`, `hidden-monitors` |
 | `stylesheet.css` | Colours of the dots and the link hint in the menu |
 | `Makefile` | `pack`, `install`, `uninstall`, `clean` targets |
 
@@ -103,6 +116,7 @@ HTTP errors are reported in the menu's summary line: 401 means the API key is in
 |-----|------|-------------|
 | `api-key` | string | UptimeRobot API key |
 | `refresh-interval` | int (60 – 3600) | seconds between two checks |
+| `notify-status-changes` | boolean | show a notification when a shown monitor goes down or comes back up |
 | `hidden-monitors` | array of strings | IDs of hidden monitors; empty means everything is shown |
 
 They can also be changed from the command line, e.g.:

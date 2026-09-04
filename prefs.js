@@ -270,6 +270,16 @@ export default class UptimeRobotPreferences extends ExtensionPreferences {
         settings.bind('refresh-interval', intervalRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         pollingGroup.add(intervalRow);
 
+        const notificationsGroup = new Adw.PreferencesGroup({title: _('Notifications')});
+        page.add(notificationsGroup);
+
+        const notifyRow = new Adw.SwitchRow({
+            title: _('Notify on status changes'),
+            subtitle: _('Show a notification when a shown monitor goes down or comes back up'),
+        });
+        settings.bind('notify-status-changes', notifyRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        notificationsGroup.add(notifyRow);
+
         const monitorsGroup = new MonitorsGroup(settings);
         page.add(monitorsGroup);
 

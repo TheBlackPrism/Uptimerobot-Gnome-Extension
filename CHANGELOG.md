@@ -4,6 +4,7 @@
 
 ### Added
 
+- Desktop notifications when a shown monitor goes down or comes back up. One monitor gets its own notification (clicking it opens the monitor's page); several monitors changing at once are summarised in a single notification that opens the dashboard. Can be switched off in the settings (new `notify-status-changes` setting, on by default).
 - The project is now licensed under the GNU GPL, version 3 or later (`LICENSE`). Source files carry SPDX headers.
 
 ## 2.0.0 – 2026-09-03
